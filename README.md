@@ -2,6 +2,8 @@
 
 Download or convert X (Twitter) GIFs and videos for Discord. Runs entirely in your browser.
 
+**Live site:** https://morzaroor.github.io/x-gif-to-discord/
+
 ## Development
 
 ```bash
@@ -11,7 +13,4 @@ npm run dev
 
 ## Deploy to GitHub Pages
 
-1. Create a repo named `x-gif-to-discord`.
-2. Push to `main`.
-3. In **Settings → Pages**, set source to **GitHub Actions**.
-4. Site will be at `https://<username>.github.io/x-gif-to-discord/`.
+Pushes to `main` deploy automatically via GitHub Actions. Pages source: **GitHub Actions**.
