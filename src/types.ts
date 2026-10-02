@@ -30,3 +30,16 @@ export interface Mp4Preset {
   crf: number
   fps?: number
 }
+
+export interface PixelCrop {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface GifClipRange {
+  start: number
+  end: number
+  crop?: PixelCrop
+}

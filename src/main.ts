@@ -11,10 +11,15 @@ import { kindLabel, resolveTweetMedia } from './tweet'
 import type { GifPreset, Mp4Preset, ResolvedMedia } from './types'
 
 const app = document.querySelector<HTMLDivElement>('#app')!
+const base = import.meta.env.BASE_URL
 
 app.innerHTML = `
   <div class="page">
     <header class="header">
+      <nav class="nav">
+        <a href="${base}" aria-current="page">Download</a>
+        <a href="${base}editor.html">Split</a>
+      </nav>
       <div class="brand">
         <span class="brand-icon" aria-hidden="true">𝕏</span>
       </div>
