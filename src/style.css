@@ -603,6 +603,54 @@ button.time-handle {
   font-size: 0.82rem;
 }
 
+.loop-block {
+  margin-top: 0.95rem;
+  padding-top: 0.95rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.loop-title {
+  margin: 0 0 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.loop-hint-block {
+  margin-top: 0;
+}
+
+.loop-controls {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.65rem;
+}
+
+.loop-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.loop-label span {
+  color: #eceef2;
+  font-variant-numeric: tabular-nums;
+}
+
+#loop-similarity {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+#find-loop {
+  width: 100%;
+}
+
 .editor-actions {
   display: flex;
   flex-wrap: wrap;

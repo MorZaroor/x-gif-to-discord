@@ -5,9 +5,11 @@ import { fetchMediaBlob } from './media-fetch'
 import { DEFAULT_GIF_PRESET, GIF_PRESETS } from './presets'
 import { kindLabel, resolveTweetMedia } from './tweet'
 import type { GifClipRange, PixelCrop, ResolvedMedia } from './types'
+import { findSeamlessLoop } from './loop-find'
 import { zipStore } from './zip'
 
 const MIN_CLIP = 0.1
+const DEFAULT_LOOP_SIMILARITY = 92
 const MIN_CROP = 0.06
 
 interface NormRect {
@@ -23,6 +25,9 @@ interface Clip {
   start: number
   end: number
   crop: NormRect | null
+  loopSimilarity: number
+  seamlessLoop: boolean
+  loopMatchEnd: number | null
 }
 
 interface CropDrag {
@@ -117,6 +122,18 @@ app.innerHTML = `
           Crop this clip
         </label>
         <p id="crop-hint" class="hint hidden">Drag the box to choose what stays in the GIF. Drag a corner to resize it.</p>
+        <div class="loop-block">
+          <p class="loop-title">Seamless loop</p>
+          <p class="hint loop-hint-block">Scans the selected range and trims it where the start and end frames match.</p>
+          <div class="loop-controls">
+            <label class="loop-label" for="loop-similarity">
+              Similarity
+              <span id="loop-sim-value">${DEFAULT_LOOP_SIMILARITY}%</span>
+            </label>
+            <input id="loop-similarity" type="range" min="75" max="99" step="1" value="${DEFAULT_LOOP_SIMILARITY}" />
+            <button id="find-loop" type="button" class="secondary">Find loop</button>
+          </div>
+        </div>
         <div class="editor-actions">
           <button id="add-clip" type="button" class="secondary">Add clip</button>
           <button id="update-clip" type="button" class="secondary">Update selected</button>
@@ -174,6 +191,9 @@ const cropToggle = document.querySelector<HTMLInputElement>('#crop-toggle')!
 const cropHint = document.querySelector<HTMLParagraphElement>('#crop-hint')!
 const addClipBtn = document.querySelector<HTMLButtonElement>('#add-clip')!
 const updateClipBtn = document.querySelector<HTMLButtonElement>('#update-clip')!
+const loopSimilarityInput = document.querySelector<HTMLInputElement>('#loop-similarity')!
+const loopSimValue = document.querySelector<HTMLSpanElement>('#loop-sim-value')!
+const findLoopBtn = document.querySelector<HTMLButtonElement>('#find-loop')!
 const clipList = document.querySelector<HTMLDivElement>('#clip-list')!
 const presetSelect = document.querySelector<HTMLSelectElement>('#preset')!
 const convertBtn = document.querySelector<HTMLButtonElement>('#convert-btn')!
@@ -193,6 +213,9 @@ const state: {
   draftEnd: number
   draftCrop: NormRect | null
   cropEnabled: boolean
+  draftLoopSimilarity: number
+  draftSeamlessLoop: boolean
+  draftLoopMatchEnd: number | null
   busy: boolean
 } = {
   blob: null,
@@ -206,6 +229,9 @@ const state: {
   draftEnd: 0,
   draftCrop: null,
   cropEnabled: false,
+  draftLoopSimilarity: DEFAULT_LOOP_SIMILARITY,
+  draftSeamlessLoop: false,
+  draftLoopMatchEnd: null,
   busy: false,
 }
 
@@ -254,6 +280,9 @@ function syncActions() {
   setEndBtn.disabled = locked || !hasVideo
   playBtn.disabled = locked || !hasVideo
   presetSelect.disabled = locked
+  loopSimilarityInput.disabled = locked || !hasVideo
+  findLoopBtn.disabled =
+    locked || !hasVideo || state.draftEnd < state.draftStart + MIN_CLIP
   for (const input of clipList.querySelectorAll<HTMLInputElement>('[data-name]')) {
     input.disabled = locked
   }
@@ -265,6 +294,53 @@ function syncActions() {
 function setBusy(next: boolean) {
   state.busy = next
   syncActions()
+}
+
+function syncLoopSimilarityUi(value: number) {
+  loopSimilarityInput.value = String(value)
+  loopSimValue.textContent = `${value}%`
+}
+
+function activeLoopSimilarity(): number {
+  if (state.selectedId) {
+    const clip = state.clips.find((item) => item.id === state.selectedId)
+    if (clip) return clip.loopSimilarity
+  }
+  return state.draftLoopSimilarity
+}
+
+function clearLoopTrimFlag() {
+  state.draftSeamlessLoop = false
+  state.draftLoopMatchEnd = null
+}
+
+function loopTimelineEnd(matchEnd: number, start: number, fps: number): number {
+  const frame = 1 / fps
+  return Math.max(start + MIN_CLIP, matchEnd - frame)
+}
+
+function clipExportEnd(clip: Clip, presetFps: number): number {
+  const end = Math.min(clip.loopMatchEnd ?? clip.end, state.duration)
+  if (!clip.seamlessLoop || clip.loopMatchEnd === null) {
+    return Math.min(clip.end, state.duration)
+  }
+  return loopTimelineEnd(end, clip.start, presetFps)
+}
+
+function syncDraftEndFromLoopMatch(fps: number) {
+  if (!state.draftSeamlessLoop || state.draftLoopMatchEnd === null) return
+  state.draftEnd = loopTimelineEnd(state.draftLoopMatchEnd, state.draftStart, fps)
+}
+
+function setActiveLoopSimilarity(value: number) {
+  const next = clamp(Math.round(value), 75, 99)
+  if (state.selectedId) {
+    const clip = state.clips.find((item) => item.id === state.selectedId)
+    if (clip) clip.loopSimilarity = next
+  } else {
+    state.draftLoopSimilarity = next
+  }
+  syncLoopSimilarityUi(next)
 }
 
 function syncTimeInputs() {
@@ -292,6 +368,7 @@ function renderTimeline() {
     })
     .join('')
   renderPlayhead()
+  syncActions()
 }
 
 function renderCrop() {
@@ -389,6 +466,9 @@ function clipFromDraft(name: string): Clip | null {
     start: state.draftStart,
     end: state.draftEnd,
     crop: state.cropEnabled ? normalizeCrop(state.draftCrop) : null,
+    loopSimilarity: activeLoopSimilarity(),
+    seamlessLoop: state.draftSeamlessLoop,
+    loopMatchEnd: state.draftSeamlessLoop ? state.draftLoopMatchEnd : null,
   }
 }
 
@@ -414,6 +494,10 @@ function applyMetadata() {
   state.clips = []
   state.selectedId = null
   cropToggle.checked = false
+  state.draftLoopSimilarity = DEFAULT_LOOP_SIMILARITY
+  state.draftSeamlessLoop = false
+  state.draftLoopMatchEnd = null
+  syncLoopSimilarityUi(DEFAULT_LOOP_SIMILARITY)
   workspace.classList.remove('hidden')
   sourceMeta.textContent = `${state.name} · ${state.videoWidth}×${state.videoHeight} · ${formatTime(state.duration)}`
   dropTitle.textContent = state.name
@@ -448,6 +532,10 @@ function loadSource(blob: Blob, name: string) {
   state.selectedId = null
   state.cropEnabled = false
   state.draftCrop = null
+  state.draftLoopSimilarity = DEFAULT_LOOP_SIMILARITY
+  state.draftSeamlessLoop = false
+  state.draftLoopMatchEnd = null
+  syncLoopSimilarityUi(DEFAULT_LOOP_SIMILARITY)
   cropToggle.checked = false
   workspace.classList.add('hidden')
   picker.classList.add('hidden')
@@ -491,9 +579,11 @@ function applyDrag(clientX: number) {
   }
   if (dragKind === 'in') {
     state.draftStart = clamp(time, 0, Math.max(0, state.draftEnd - MIN_CLIP))
+    clearLoopTrimFlag()
     seekTo(state.draftStart)
   } else if (dragKind === 'out') {
     state.draftEnd = clamp(time, Math.min(state.duration, state.draftStart + MIN_CLIP), state.duration)
+    clearLoopTrimFlag()
     seekTo(state.draftEnd)
   }
   syncTimeInputs()
@@ -509,6 +599,9 @@ function selectClip(id: string) {
   state.draftCrop = clip.crop ? { ...clip.crop } : null
   state.cropEnabled = clip.crop !== null
   cropToggle.checked = state.cropEnabled
+  syncLoopSimilarityUi(clip.loopSimilarity)
+  state.draftSeamlessLoop = clip.seamlessLoop
+  state.draftLoopMatchEnd = clip.loopMatchEnd
   syncTimeInputs()
   renderTimeline()
   renderClips()
@@ -557,14 +650,76 @@ function setStartFromPlayhead() {
   const time = clamp(player.currentTime, 0, Math.max(0, state.duration - MIN_CLIP))
   state.draftStart = time
   if (state.draftEnd < time + MIN_CLIP) state.draftEnd = Math.min(state.duration, time + MIN_CLIP)
+  clearLoopTrimFlag()
   syncTimeInputs()
   renderTimeline()
+}
+
+async function handleFindLoop() {
+  if (state.busy || state.duration <= 0) return
+  if (state.draftEnd < state.draftStart + MIN_CLIP) {
+    setStatus('Mark a start and end first.', 'error')
+    return
+  }
+
+  const scanGen = generation
+  player.pause()
+  setBusy(true)
+  setStatus('Scanning for a seamless loop…')
+
+  const crop = state.cropEnabled ? state.draftCrop : null
+  const similarity = activeLoopSimilarity()
+
+  try {
+    const result = await findSeamlessLoop(player, {
+      start: state.draftStart,
+      end: state.draftEnd,
+      similarityPercent: similarity,
+      crop,
+      isCancelled: () => scanGen !== generation,
+      onProgress: (ratio, label) => {
+        if (scanGen !== generation) return
+        setStatus(label)
+        showProgress(ratio, label)
+      },
+    })
+
+    if (scanGen !== generation) return
+    progressBlock.classList.add('hidden')
+
+    if (!result) {
+      setStatus(
+        `No loop found at ${similarity}% similarity. Try a wider range or lower the percentage.`,
+        'error',
+      )
+      return
+    }
+
+    state.draftStart = result.start
+    state.draftLoopMatchEnd = result.matchEnd
+    state.draftSeamlessLoop = true
+    syncDraftEndFromLoopMatch(selectedPreset().fps)
+    syncTimeInputs()
+    renderTimeline()
+    syncActions()
+    seekTo(result.start)
+
+    const pct = Math.round(result.similarity * 100)
+    setStatus(`Loop found at ${pct}% match. Update the clip or add a new one.`, 'success')
+  } catch (error) {
+    if (scanGen !== generation) return
+    progressBlock.classList.add('hidden')
+    setStatus(error instanceof Error ? error.message : 'Loop scan failed.', 'error')
+  } finally {
+    if (scanGen === generation) setBusy(false)
+  }
 }
 
 function setEndFromPlayhead() {
   const time = clamp(player.currentTime, Math.min(state.duration, state.draftStart + MIN_CLIP), state.duration)
   state.draftEnd = time
   if (state.draftStart > time - MIN_CLIP) state.draftStart = Math.max(0, time - MIN_CLIP)
+  clearLoopTrimFlag()
   syncTimeInputs()
   renderTimeline()
 }
@@ -572,9 +727,11 @@ function setEndFromPlayhead() {
 function nudgeHandle(which: 'in' | 'out', delta: number) {
   if (which === 'in') {
     state.draftStart = clamp(state.draftStart + delta, 0, Math.max(0, state.draftEnd - MIN_CLIP))
+    clearLoopTrimFlag()
     seekTo(state.draftStart)
   } else {
     state.draftEnd = clamp(state.draftEnd + delta, Math.min(state.duration, state.draftStart + MIN_CLIP), state.duration)
+    clearLoopTrimFlag()
     seekTo(state.draftEnd)
   }
   syncTimeInputs()
@@ -731,7 +888,7 @@ async function handleConvert() {
   const preset = selectedPreset()
   const ranges: GifClipRange[] = state.clips.map((clip) => ({
     start: clip.start,
-    end: Math.min(clip.end, state.duration),
+    end: clipExportEnd(clip, preset.fps),
     crop: clip.crop ? toPixelCrop(clip.crop, state.videoWidth, state.videoHeight) : undefined,
   }))
 
@@ -879,6 +1036,7 @@ startInput.addEventListener('input', () => {
   const value = Number(startInput.value)
   if (!Number.isFinite(value)) return
   state.draftStart = clamp(value, 0, Math.max(0, state.draftEnd - MIN_CLIP))
+  clearLoopTrimFlag()
   seekTo(state.draftStart)
   renderTimeline()
 })
@@ -887,6 +1045,7 @@ endInput.addEventListener('input', () => {
   const value = Number(endInput.value)
   if (!Number.isFinite(value)) return
   state.draftEnd = clamp(value, Math.min(state.duration, state.draftStart + MIN_CLIP), state.duration || value)
+  clearLoopTrimFlag()
   seekTo(state.draftEnd)
   renderTimeline()
 })
@@ -955,6 +1114,14 @@ cropBox.addEventListener('pointercancel', () => {
   cropDrag = null
 })
 
+loopSimilarityInput.addEventListener('input', () => {
+  setActiveLoopSimilarity(Number(loopSimilarityInput.value))
+})
+
+findLoopBtn.addEventListener('click', () => {
+  void handleFindLoop()
+})
+
 addClipBtn.addEventListener('click', addClip)
 updateClipBtn.addEventListener('click', updateSelectedClip)
 
@@ -980,6 +1147,12 @@ clipList.addEventListener('click', (event) => {
 
 convertBtn.addEventListener('click', () => {
   void handleConvert()
+})
+
+presetSelect.addEventListener('change', () => {
+  syncDraftEndFromLoopMatch(selectedPreset().fps)
+  syncTimeInputs()
+  renderTimeline()
 })
 
 window.addEventListener('resize', () => layoutStage())
