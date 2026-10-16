@@ -713,10 +713,10 @@ async function handleResolve() {
     if (videos.length === 1) {
       picker.classList.add('hidden')
       toLoad = videos[0]
-      return
+    } else {
+      renderPicker(videos)
+      setStatus(`${videos.length} videos found. Choose one.`, 'success')
     }
-    renderPicker(videos)
-    setStatus(`${videos.length} videos found. Choose one.`, 'success')
   } catch (error) {
     setStatus(error instanceof Error ? error.message : 'Could not load that link.', 'error')
   } finally {
